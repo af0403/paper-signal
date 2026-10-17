@@ -31,7 +31,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: state.json
-          key: paper-state-${{ github.run_id }}
+          key: paper-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: paper-state-
 
       - name: Check signal, update dashboard, notify
@@ -47,16 +47,23 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: state.json
-          key: paper-state-${{ github.run_id }}
+          key: paper-state-${{ github.run_id }}-${{ github.run_attempt }}
 
+      # Commit only docs/data.json on top of the latest main, so a re-run of an
+      # old run (or a code change pushed meanwhile) can never cause a conflict.
       - name: Publish dashboard data
         run: |
           git config user.name  "paper-signal-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/data.json
-          if git diff --cached --quiet; then
-            echo "No dashboard change"
-          else
+          cp docs/data.json "$RUNNER_TEMP/data.json"
+          for attempt in 1 2 3; do
+            git fetch -q origin main
+            git reset -q --hard origin/main
+            cp "$RUNNER_TEMP/data.json" docs/data.json
+            git add docs/data.json
+            if git diff --cached --quiet; then echo "No dashboard change"; exit 0; fi
             git commit -q -m "data: $(date -u +%Y-%m-%dT%H:%MZ)"
-            git pull -q --rebase && git push -q
-          fi
+            git push -q origin HEAD:main && exit 0
+            echo "push raced, retrying ($attempt)"; sleep 5
+          done
+          exit 1
