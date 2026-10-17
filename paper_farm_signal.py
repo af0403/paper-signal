@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import urllib.request
@@ -92,6 +93,43 @@ def tail_supply(h: float) -> float:
     """PAPER minted along the decaying tail once H = tailProgress (integral of
     the rate curve). Bounded by 100 * S = 12B, so dilution can't run away."""
     return FLAT_RATE * S_DECAY * h / (S_DECAY + h)
+
+
+TREND_DAYS = 6          # days of history the reward trend looks at
+TREND_HALF_LIFE = 2.0   # a day's weight halves every 2 days back
+MAX_DECAY = 0.30        # never assume rewards fall faster than 30%/day
+
+
+def reward_trend(cols: dict) -> dict | None:
+    """Weighted log-linear fit of daily staker rewards over the last week.
+
+    One quiet or one huge day (a big liquidation) moves the fit a little
+    instead of setting the whole forecast. Returns today's fitted reward level
+    ($/day) and the daily rate of decline, or None with under 3 usable days."""
+    cum = cols["stakingRewards"]
+    n = len(cum)
+    xs, ys, ws, daily = [], [], [], []
+    for i in range(TREND_DAYS):
+        end, start = n - 1 - 24 * i, n - 1 - 24 * (i + 1)
+        if start < 0:
+            break
+        s = cum[end] - cum[start]
+        daily.append(s)
+        if s > 0:
+            xs.append(-i)
+            ys.append(math.log(s))
+            ws.append(0.5 ** (i / TREND_HALF_LIFE))
+    if len(xs) < 3:
+        return None
+    W = sum(ws)
+    mx = sum(w * x for w, x in zip(ws, xs)) / W
+    my = sum(w * y for w, y in zip(ws, ys)) / W
+    sxx = sum(w * (x - mx) ** 2 for w, x in zip(ws, xs))
+    slope = sum(w * (x - mx) * (y - my) for w, x, y in zip(ws, xs, ys)) / sxx
+    raw = 1 - math.exp(slope)                     # +ve = falling
+    return {"level_per_day": math.exp(my - slope * mx), "raw_decay": raw,
+            "decay": min(MAX_DECAY, max(0.0, raw)), "days": len(xs),
+            "daily_rewards": [round(x) for x in daily]}
 
 
 def simulate(loss: float, rate: float, staked0: float, rewards_per_day: float,
@@ -160,27 +198,33 @@ def analyse(summary: dict, history: dict, house: dict | None, loss: float,
     mint24 = per_day(w24, "minted")
     staked = w24["staked"]
 
+    trend = reward_trend(cols)
+    if trend:
+        level, decay = trend["level_per_day"], trend["decay"]
+        method = f"weighted trend over {trend['days']} days"
+    else:                                        # too little history yet
+        level = r24
+        decay = min(MAX_DECAY, max(0.0, 1 - r24 / rprev)) if rprev > 0 else 0.0
+        method = "last 24h vs prior 24h (not enough history for a trend)"
     if decay_override is not None:
-        decay = decay_override
-    elif rprev > 0:
-        decay = min(0.9, max(0.0, 1 - r24 / rprev))   # never extrapolate growth
-    else:
-        decay = 0.0
+        decay, method = decay_override, "set manually"
 
     # Rewards to stakers pause while the LP is under the cap or a queue exists;
     # estimate how long until they resume, from the recent net-loss pace.
     net_loss_day = max(per_day(w24, "net_loss"), 1.0)
-    refill_days = max(0.0, (CAP - lp) + queue) / net_loss_day if (lp < CAP or queue > 0) else 0.0
+    # The LP hovers a little under $5M as overflow is swept; only treat rewards
+    # as paused when it is clearly below the cap (or winners are queued).
+    refill_days = max(0.0, (CAP - lp) + queue) / net_loss_day if (lp < 0.95 * CAP or queue > 0) else 0.0
 
     # Gross loss basis the whole market fed in over the last day (wins don't
     # cancel it: mints come from gross losses, rewards from net losses).
     basis24 = mint24 / rate if rate else 0.0
     scenarios = {
-        "recent_6h_pace": simulate(loss, rate, staked, r6, basis24, tail, decay, refill_days),
-        "last_24h_with_decay": simulate(loss, rate, staked, r24, basis24, tail, decay, refill_days),
-        "last_24h_flat (optimistic)": simulate(loss, rate, staked, r24, basis24, tail, 0.0, refill_days),
+        "base: weekly trend": simulate(loss, rate, staked, level, basis24, tail, decay, refill_days),
+        "last 6h pace, trend decline": simulate(loss, rate, staked, r6, basis24, tail, decay, refill_days),
+        "last 24h held flat (optimistic)": simulate(loss, rate, staked, r24, basis24, tail, 0.0, refill_days),
     }
-    base = scenarios["last_24h_with_decay"]
+    base = scenarios["base: weekly trend"]
 
     market_cost = (w24["net_loss"] / w24["minted"]) if w24["minted"] > 0 else None
     drain = drain_move(house, tracked_lp)
@@ -199,10 +243,17 @@ def analyse(summary: dict, history: dict, house: dict | None, loss: float,
 
     return {
         "decision": decision, "why": why,
-        "inputs": {"loss_usd": loss, "target_days": target_days, "decay_per_day": round(decay, 4)},
+        "inputs": {"loss_usd": loss, "target_days": target_days, "decay_per_day": round(decay, 4),
+                   "decay_method": method,
+                   "trend_level_per_day": round(level),
+                   "trend_raw_decay": round(trend["raw_decay"], 4) if trend else None,
+                   "daily_rewards_newest_first": trend["daily_rewards"] if trend else None},
         "protocol": {
             "as_of_ms": summary["source"]["at"], "mint_rate": round(rate, 3),
-            "your_cost_per_paper": round(1 / rate, 5), "reset_active": reset_active,
+            # Liquidation mints on the full margin; a losing close on 98% of the loss.
+            "your_cost_per_paper": round(1 / rate, 5),
+            "your_cost_per_paper_close": round(1 / (rate * 0.98), 5),
+            "reset_active": reset_active,
             "tracked_lp_usd": round(tracked_lp), "lp_usd": round(lp), "queue_usd": round(queue),
             "tail_progress_usd": round(tail), "paper_staked": round(staked),
             "rewards_last_24h_usd": round(w24["rewards"]), "rewards_prev_24h_usd": round(prev24["rewards"]),
@@ -222,7 +273,8 @@ def report(a: dict) -> str:
         f"\n  SIGNAL: {a['decision']}  -  {a['why']}\n",
         f"  Mint rate        {p['mint_rate']:.2f} PAPER per $1 lost"
         + ("   (RESET ACTIVE: LP under $2M)" if p["reset_active"] else ""),
-        f"  Your cost        ${p['your_cost_per_paper']:.4f} per PAPER (straight loss)",
+        f"  Your cost        ${p['your_cost_per_paper']:.4f} per PAPER if liquidated, "
+        f"${p['your_cost_per_paper_close']:.4f} on a losing close",
     ]
     if p["market_net_cost_per_paper"]:
         x = p["your_cost_per_paper"] / p["market_net_cost_per_paper"]
@@ -231,7 +283,7 @@ def report(a: dict) -> str:
     lines += [
         f"  Staker rewards   ${p['rewards_last_24h_usd']:,} last 24h vs ${p['rewards_prev_24h_usd']:,} prior 24h "
         f"(${p['rewards_last_6h_usd']:,} in last 6h)",
-        f"  Modelled decay   {a['inputs']['decay_per_day']*100:.1f}% per day",
+        f"  Modelled decay   {a['inputs']['decay_per_day']*100:.1f}% per day ({a['inputs']['decay_method']})",
         f"  LP / queue       ${p['lp_usd']:,} / ${p['queue_usd']:,}"
         + (f"   rewards resume in ~{p['rewards_resume_in_days']}d" if p["rewards_resume_in_days"] else ""),
     ]
@@ -240,7 +292,7 @@ def report(a: dict) -> str:
         lines.append(f"  Reset distance   traders net long BTC ${d['net_long_btc_usd']/1e6:,.1f}M, "
                      f"ETH ${d['net_long_eth_usd']/1e6:,.1f}M -> ~{d['move_pct_both_assets']:.2f}% "
                      f"favourable move drains LP to $2M (lower bound)")
-    lines.append(f"\n  ${a['inputs']['loss_usd']:,.0f} loss -> {s['last_24h_with_decay']['paper']:,.0f} PAPER")
+    lines.append(f"\n  ${a['inputs']['loss_usd']:,.0f} loss -> {s["base: weekly trend"]['paper']:,.0f} PAPER")
     lines.append(f"  {'scenario':<30}{'payback':>10}{'30d':>10}{'90d':>10}{'365d':>10}")
     for name, r in s.items():
         pb = f"{r['payback_days']}d" if r["payback_days"] else "never"

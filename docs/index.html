@@ -111,7 +111,7 @@ function render(d) {
   const a = d.latest;
   if (!a) return;
   const p = a.protocol, s = a.scenarios, dr = a.drain_to_reset || {};
-  const base = s["last_24h_with_decay"], flat = s["last_24h_flat (optimistic)"];
+  const base = s["base: weekly trend"], flat = s["last 24h held flat (optimistic)"];
   const chg = p.rewards_prev_24h_usd ? (p.rewards_last_24h_usd / p.rewards_prev_24h_usd - 1) * 100 : null;
   const ratio = p.market_net_cost_per_paper ? p.your_cost_per_paper / p.market_net_cost_per_paper : null;
 
@@ -146,13 +146,13 @@ function render(d) {
   $("#why").innerHTML = "";
   $("#why").append(a.why.charAt(0).toUpperCase() + a.why.slice(1));
   const sm = document.createElement("small");
-  sm.textContent = `Target payback ${a.inputs.target_days} days · modelled reward decline ${(a.inputs.decay_per_day * 100).toFixed(1)}%/day`;
+  sm.textContent = `Target payback ${a.inputs.target_days} days · modelled reward decline ${(a.inputs.decay_per_day * 100).toFixed(1)}%/day (${a.inputs.decay_method || ""})`;
   $("#why").append(sm);
 
   // KPIs
   const k = [
     ["Mint rate", p.mint_rate.toFixed(2), "PAPER per $1 lost" + (p.reset_active ? " · RESET ACTIVE" : "")],
-    ["Your cost / PAPER", "$" + p.your_cost_per_paper.toFixed(4), ratio ? `crowd pays $${p.market_net_cost_per_paper.toFixed(4)} (${ratio.toFixed(1)}×)` : ""],
+    ["Your cost / PAPER", "$" + p.your_cost_per_paper.toFixed(4), (p.your_cost_per_paper_close ? `$${p.your_cost_per_paper_close.toFixed(4)} on a losing close · ` : "") + (ratio ? `crowd pays $${p.market_net_cost_per_paper.toFixed(4)} (${ratio.toFixed(1)}×)` : "")],
     ["Staker rewards 24h", usdM(p.rewards_last_24h_usd), chg == null ? "" : `<span class="${chg >= 0 ? "up" : "down"}">${chg >= 0 ? "▲" : "▼"} ${Math.abs(chg).toFixed(0)}%</span> vs prior 24h · ${usd(p.rewards_last_6h_usd)} last 6h`],
     ["Payback", days(base.payback_days), `base case · ${days(flat.payback_days)} if rewards hold flat`],
     ["LP / queue", usdM(p.lp_usd), `queue ${usd(p.queue_usd)}` + (p.rewards_resume_in_days ? ` · rewards resume ~${p.rewards_resume_in_days}d` : "")],

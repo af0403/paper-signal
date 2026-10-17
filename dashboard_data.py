@@ -57,7 +57,7 @@ def record_success(a: dict, history: dict) -> None:
     d["checks"].append({
         "t": now, "decision": a["decision"], "mint_rate": p["mint_rate"],
         "rewards_24h": p["rewards_last_24h_usd"], "rewards_6h": p["rewards_last_6h_usd"],
-        "payback_base": pb(s["last_24h_with_decay"]), "payback_flat": pb(s["last_24h_flat (optimistic)"]),
+        "payback_base": pb(s["base: weekly trend"]), "payback_flat": pb(s["last 24h held flat (optimistic)"]),
         "lp": p["lp_usd"], "queue": p["queue_usd"], "move_pct": drain.get("move_pct_both_assets"),
     })
     d["checks"] = [x for x in d["checks"] if now - x["t"] <= KEEP_SECS]

@@ -135,15 +135,16 @@ def payback_str(r: dict) -> str:
 
 def summary(a: dict) -> str:
     p, s, d = a["protocol"], a["scenarios"], a["drain_to_reset"]
-    base = s["last_24h_with_decay"]
-    flat = s["last_24h_flat (optimistic)"]
+    base = s["base: weekly trend"]
+    flat = s["last 24h held flat (optimistic)"]
     loss = a["inputs"]["loss_usd"]
     lines = [
         f"{EMOJI[a['decision']]} {a['decision']}: {a['why']}",
         "",
         f"Mint rate: {p['mint_rate']:.1f} PAPER/$1"
         + (" (RESET ACTIVE)" if p["reset_active"] else ""),
-        f"Your cost: ${p['your_cost_per_paper']:.4f}/PAPER",
+        f"Your cost: ${p['your_cost_per_paper']:.4f}/PAPER if liquidated, "
+        f"${p['your_cost_per_paper_close']:.4f} on a losing close",
         f"Staker rewards: ${p['rewards_last_24h_usd']/1e6:.2f}M last 24h "
         f"(prev ${p['rewards_prev_24h_usd']/1e6:.2f}M)",
         f"${loss:,.0f} loss payback: {payback_str(base)} base, {payback_str(flat)} if flat",
@@ -253,7 +254,7 @@ def run() -> int:
     if uk_now.hour >= HEARTBEAT_HOUR and state.get("last_heartbeat") != today:
         if not msgs:
             p = a["protocol"]
-            base = a["scenarios"]["last_24h_with_decay"]
+            base = a["scenarios"]["base: weekly trend"]
             msgs.append(f"☀️ Daily check: {EMOJI[decision]} {decision}. Mint {p['mint_rate']:.1f}/$1, "
                         f"rewards ${p['rewards_last_24h_usd']/1e6:.2f}M/24h, "
                         f"payback {payback_str(base)}.")
