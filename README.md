@@ -1,6 +1,6 @@
 # PAPER Signal
 
-Watches Papertrade's public stats every 15 minutes and tells you when farming
+Watches Papertrade's public stats every 30 minutes and tells you when farming
 PAPER (taking losses to mint it, then staking) is actually worth it.
 
 - **Telegram bot**: messages you when the signal changes (WAIT / WATCH / FARM),

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram notifier for the PAPER farm-timing signal (runs every 15 minutes).
+Telegram notifier for the PAPER farm-timing signal (runs every 30 minutes).
 
 Runs paper_farm_signal.analyse(), compares the result with the last run and
 messages you on Telegram only when something worth knowing happens:
@@ -232,7 +232,7 @@ def run() -> int:
     state["fail_count"] = 0
 
     if last is None:
-        msgs.append("👋 PAPER signal bot connected. I check every 15 minutes and only "
+        msgs.append("👋 PAPER signal bot connected. I check every 30 minutes and only "
                     "message you when the signal changes, plus a 9am heartbeat.\n\n" + summary(a))
         state["last_alert_ts"] = now
     elif decision != last:

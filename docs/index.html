@@ -72,7 +72,7 @@ footer{color:var(--muted);font-size:12.5px;margin-top:18px;line-height:1.6}
     Read-only model. Mint rate and settlement maths follow the contracts as documented by the open-source
     papertrade-sdk. Payback assumes a straight loss, staker rewards continuing at the stated pace, and dilution
     from everyone else's losses along the mint curve. It ignores smart-contract, oracle and governance risk.
-    Updated by GitHub Actions every 15 minutes; this page refreshes itself every minute.
+    Updated by GitHub Actions every 30 minutes; this page refreshes itself every minute.
   </footer>
 </div>
 
@@ -204,7 +204,7 @@ function freshness(d) {
   const t = d.updated_ms;
   const dot = $("#dot");
   if (!t) { $("#fresh").textContent = "no data yet"; dot.className = "dot stale"; return; }
-  const stale = Date.now() - t > 40 * 60 * 1000;
+  const stale = Date.now() - t > 70 * 60 * 1000;
   dot.className = "dot" + ((d.status || {}).ok === false ? " down" : stale ? " stale" : "");
   const tgs = (d.telegram || {}).status || "";
   const tgLabel = !tgs ? "" : tgs.startsWith("ok") ? " · Telegram connected" : " · Telegram: " + tgs.split(":")[0].replace("_", " ");
