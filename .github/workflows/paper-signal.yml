@@ -36,7 +36,7 @@ jobs:
 
       - name: Check signal, update dashboard, notify
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.PAPERWATCHER }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           LOSS_USD: ${{ vars.LOSS_USD || '1000' }}
           TARGET_DAYS: ${{ vars.TARGET_DAYS || '30' }}
