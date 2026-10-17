@@ -4,8 +4,9 @@ Watches Papertrade's public stats every 15 minutes and tells you when farming
 PAPER (taking losses to mint it, then staking) is actually worth it.
 
 - **Telegram bot**: messages you when the signal changes (WAIT / WATCH / FARM),
-  every 6 hours while it stays on FARM, a 9am daily heartbeat, and a warning if
-  Papertrade's stats can't be reached.
+  every 6 hours while it stays on FARM, when the LP drops below / returns to the
+  $5M cap, when it crosses the $2M reset line, a 9am daily heartbeat, and a
+  warning if Papertrade's stats can't be reached.
 - **Live dashboard**: GitHub Pages site with the signal, payback, mint rate,
   rewards, reset distance and history charts. Refreshes itself every minute.
 

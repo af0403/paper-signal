@@ -8,6 +8,8 @@ messages you on Telegram only when something worth knowing happens:
   * first run            -> "connected" message with the current signal
   * signal changes       -> WAIT / WATCH / FARM alert (both directions)
   * still FARM           -> reminder every 6 hours
+  * LP crosses $5M cap   -> drop below (overflow to stakers stops) / back to cap
+  * LP crosses $2M       -> mint-rate reset to 100 PAPER/$1 / back on the curve
   * 09:00 UK each day    -> one-line "still alive" heartbeat
   * 3 failed fetches     -> "can't reach Papertrade" warning, then "back online"
 
@@ -44,6 +46,41 @@ HEARTBEAT_HOUR = 9
 FARM_REMINDER_SECS = 6 * 3600
 FAIL_ALERT_AFTER = 3
 EMOJI = {"FARM": "🟢", "WATCH": "🟡", "WAIT": "🔴"}
+
+# LP zones, with a buffer so tiny wobbles around the $5M cap don't spam you:
+# "full" once LP >= $4.95M, "below" once LP < $4.75M, "reset" under $2M.
+LP_FULL_AT = 4.95e6
+LP_BELOW_AT = 4.75e6
+LP_CLIFF = 2e6
+
+
+def lp_zone(lp: float, prev: str | None) -> str:
+    if lp < LP_CLIFF:
+        return "reset"
+    if lp >= LP_FULL_AT:
+        return "full"
+    if lp < LP_BELOW_AT:
+        return "below"
+    return prev if prev in ("full", "below") else "full"
+
+
+def lp_message(prev: str, zone: str, a: dict) -> str | None:
+    p = a["protocol"]
+    lp = f"${p['lp_usd']/1e6:.2f}M"
+    if zone == "reset":
+        curve = sig.mint_rate(LP_FULL_AT, p["tail_progress_usd"])   # rate if LP were above $2M
+        return (f"🚨 LP fell below $2M ({lp}). Mint rate reset to 100 PAPER/$1, "
+                f"about {100 / max(curve, 1e-9):.0f}x cheaper than the curve ({curve:.1f}). "
+                f"Staker rewards are paused until the LP refills to $5M.")
+    if prev == "reset":
+        return (f"↗️ LP back above $2M ({lp}). Mint rate is back on the curve at "
+                f"{p['mint_rate']:.1f} PAPER/$1.")
+    if zone == "below":
+        return (f"🔻 LP dropped below the $5M cap ({lp}). Traders are winning, so "
+                f"overflow to stakers has stopped. The reset line is $2M.")
+    if zone == "full":
+        return f"🔺 LP back at the $5M cap ({lp}). Overflow to stakers has resumed."
+    return None
 
 
 # ---------------------------------------------------------------- telegram
@@ -173,6 +210,14 @@ def run() -> int:
     elif decision == "FARM" and now - state.get("last_alert_ts", 0) >= FARM_REMINDER_SECS:
         msgs.append("Still FARM\n\n" + summary(a))
         state["last_alert_ts"] = now
+
+    prev_zone = state.get("lp_zone")
+    zone = lp_zone(a["protocol"]["lp_usd"], prev_zone)
+    if prev_zone is not None and zone != prev_zone:
+        m = lp_message(prev_zone, zone, a)
+        if m:
+            msgs.append(m)
+    state["lp_zone"] = zone
 
     today = uk_now.date().isoformat()
     if uk_now.hour >= HEARTBEAT_HOUR and state.get("last_heartbeat") != today:
