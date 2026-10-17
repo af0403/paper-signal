@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""
+Telegram notifier for the PAPER farm-timing signal (runs every 15 minutes).
+
+Runs paper_farm_signal.analyse(), compares the result with the last run and
+messages you on Telegram only when something worth knowing happens:
+
+  * first run            -> "connected" message with the current signal
+  * signal changes       -> WAIT / WATCH / FARM alert (both directions)
+  * still FARM           -> reminder every 6 hours
+  * 09:00 UK each day    -> one-line "still alive" heartbeat
+  * 3 failed fetches     -> "can't reach Papertrade" warning, then "back online"
+
+Read-only: no wallet, no trading.
+
+Environment:
+  TELEGRAM_BOT_TOKEN   required (from @BotFather; keep it in a GitHub secret)
+  TELEGRAM_CHAT_ID     optional; auto-detected from the last message you sent
+                       the bot, then remembered in the state file
+  STATE_FILE           default: state.json
+  LOSS_USD             default: 1000
+  TARGET_DAYS          default: 30
+  OFFLINE_DIR          testing only: read saved JSON instead of the live API
+  TELEGRAM_API         testing only: override https://api.telegram.org
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+import urllib.parse
+import urllib.request
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import dashboard_data
+import paper_farm_signal as sig
+
+TG_API = os.environ.get("TELEGRAM_API", "https://api.telegram.org")
+STATE_FILE = os.environ.get("STATE_FILE", "state.json")
+UK = ZoneInfo("Europe/London")
+HEARTBEAT_HOUR = 9
+FARM_REMINDER_SECS = 6 * 3600
+FAIL_ALERT_AFTER = 3
+EMOJI = {"FARM": "🟢", "WATCH": "🟡", "WAIT": "🔴"}
+
+
+# ---------------------------------------------------------------- telegram
+def tg(token: str, method: str, params: dict | None = None) -> dict:
+    url = f"{TG_API}/bot{token}/{method}"
+    data = urllib.parse.urlencode(params or {}).encode() if params else None
+    with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20) as r:
+        return json.load(r)
+
+
+def find_chat_id(token: str) -> int | None:
+    """The chat of the most recent private message sent to the bot."""
+    res = tg(token, "getUpdates", {"limit": "100"})
+    for upd in reversed(res.get("result", [])):
+        chat = (upd.get("message") or upd.get("edited_message") or {}).get("chat")
+        if chat and chat.get("type") == "private":
+            return chat["id"]
+    return None
+
+
+def send(token: str, chat_id: int, text: str) -> None:
+    tg(token, "sendMessage", {"chat_id": str(chat_id), "text": text,
+                              "disable_web_page_preview": "true"})
+
+
+# ------------------------------------------------------------------- state
+def load_state() -> dict:
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(state: dict) -> None:
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+# ---------------------------------------------------------------- messages
+def payback_str(r: dict) -> str:
+    return f"{r['payback_days']}d" if r["payback_days"] else "never (1yr)"
+
+
+def summary(a: dict) -> str:
+    p, s, d = a["protocol"], a["scenarios"], a["drain_to_reset"]
+    base = s["last_24h_with_decay"]
+    flat = s["last_24h_flat (optimistic)"]
+    loss = a["inputs"]["loss_usd"]
+    lines = [
+        f"{EMOJI[a['decision']]} {a['decision']}: {a['why']}",
+        "",
+        f"Mint rate: {p['mint_rate']:.1f} PAPER/$1"
+        + (" (RESET ACTIVE)" if p["reset_active"] else ""),
+        f"Your cost: ${p['your_cost_per_paper']:.4f}/PAPER",
+        f"Staker rewards: ${p['rewards_last_24h_usd']/1e6:.2f}M last 24h "
+        f"(prev ${p['rewards_prev_24h_usd']/1e6:.2f}M)",
+        f"${loss:,.0f} loss payback: {payback_str(base)} base, {payback_str(flat)} if flat",
+    ]
+    if p["rewards_resume_in_days"]:
+        lines.append(f"Rewards paused, resume in ~{p['rewards_resume_in_days']}d")
+    if d and d.get("move_pct_both_assets") is not None:
+        lines.append(f"Reset distance: ~{d['move_pct_both_assets']:.2f}% move in the crowd's favour")
+    return "\n".join(lines)
+
+
+# -------------------------------------------------------------------- main
+def resolve_chat(token: str, state: dict) -> int | None:
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID") or state.get("chat_id")
+    if not chat_id:
+        chat_id = find_chat_id(token)
+    if chat_id:
+        state["chat_id"] = int(chat_id)
+        return int(chat_id)
+    print("No Telegram chat found yet. Open your bot in Telegram and send it any "
+          "message; the next run will pick it up.", file=sys.stderr)
+    return None
+
+
+def run() -> int:
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        print("TELEGRAM_BOT_TOKEN not set: updating the dashboard only.", file=sys.stderr)
+    state = load_state()
+    now = time.time()
+    uk_now = datetime.fromtimestamp(now, UK)
+
+    # 1. fetch + analyse; the dashboard is updated whatever happens next
+    try:
+        summary_json, history, house = sig.load(os.environ.get("OFFLINE_DIR"))
+        a = sig.analyse(summary_json, history, house,
+                        float(os.environ.get("LOSS_USD", 1000)),
+                        int(os.environ.get("TARGET_DAYS", 30)), None, 1.0)
+        dashboard_data.record_success(a, history)
+    except Exception as e:
+        state["fail_count"] = state.get("fail_count", 0) + 1
+        print(f"fetch/analyse failed ({state['fail_count']}): {e}", file=sys.stderr)
+        dashboard_data.record_failure(str(e))
+        chat_id = resolve_chat(token, state) if token else None
+        if chat_id and state["fail_count"] == FAIL_ALERT_AFTER:
+            send(token, chat_id, f"⚠️ Can't reach Papertrade's stats for {FAIL_ALERT_AFTER} "
+                                 f"checks in a row.\nLast error: {str(e)[:200]}\n"
+                                 "I'll keep trying and tell you when it's back.")
+        save_state(state)
+        return 0
+
+    chat_id = resolve_chat(token, state) if token else None
+    if not chat_id:
+        save_state(state)
+        print(f"{uk_now:%Y-%m-%d %H:%M} {a['decision']} | dashboard updated, no Telegram")
+        return 0
+
+    # 2. decide what (if anything) to say
+    decision, last = a["decision"], state.get("last_decision")
+    msgs = []
+    if state.get("fail_count", 0) >= FAIL_ALERT_AFTER:
+        msgs.append("✅ Papertrade stats reachable again.")
+    state["fail_count"] = 0
+
+    if last is None:
+        msgs.append("👋 PAPER signal bot connected. I check every 15 minutes and only "
+                    "message you when the signal changes, plus a 9am heartbeat.\n\n" + summary(a))
+        state["last_alert_ts"] = now
+    elif decision != last:
+        msgs.append(f"Signal changed: {last} → {decision}\n\n" + summary(a))
+        state["last_alert_ts"] = now
+    elif decision == "FARM" and now - state.get("last_alert_ts", 0) >= FARM_REMINDER_SECS:
+        msgs.append("Still FARM\n\n" + summary(a))
+        state["last_alert_ts"] = now
+
+    today = uk_now.date().isoformat()
+    if uk_now.hour >= HEARTBEAT_HOUR and state.get("last_heartbeat") != today:
+        if not msgs:
+            p = a["protocol"]
+            base = a["scenarios"]["last_24h_with_decay"]
+            msgs.append(f"☀️ Daily check: {EMOJI[decision]} {decision}. Mint {p['mint_rate']:.1f}/$1, "
+                        f"rewards ${p['rewards_last_24h_usd']/1e6:.2f}M/24h, "
+                        f"payback {payback_str(base)}.")
+        state["last_heartbeat"] = today
+
+    for m in msgs:
+        send(token, chat_id, m)
+
+    state["last_decision"] = decision
+    state["last_run"] = uk_now.isoformat(timespec="minutes")
+    save_state(state)
+    print(f"{uk_now:%Y-%m-%d %H:%M} {decision} | sent {len(msgs)} message(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(run())

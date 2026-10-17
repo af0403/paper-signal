@@ -1,0 +1,62 @@
+name: PAPER signal
+
+# Runs every 15 minutes on GitHub's servers (your laptop can be off).
+# Each run: fetch Papertrade's public stats -> update the dashboard data ->
+# message Telegram if the signal changed. Read-only: no wallet, no trading.
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch: {}          # "Run workflow" button for a manual check
+
+permissions:
+  contents: write                # to commit docs/data.json for the dashboard
+
+concurrency:
+  group: paper-signal
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Remembers the last signal and your Telegram chat between runs
+      - name: Restore bot memory
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: paper-state-${{ github.run_id }}
+          restore-keys: paper-state-
+
+      - name: Check signal, update dashboard, notify
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LOSS_USD: ${{ vars.LOSS_USD || '1000' }}
+          TARGET_DAYS: ${{ vars.TARGET_DAYS || '30' }}
+        run: python notify.py
+
+      - name: Save bot memory
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: paper-state-${{ github.run_id }}
+
+      - name: Publish dashboard data
+        run: |
+          git config user.name  "paper-signal-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/data.json
+          if git diff --cached --quiet; then
+            echo "No dashboard change"
+          else
+            git commit -q -m "data: $(date -u +%Y-%m-%dT%H:%MZ)"
+            git pull -q --rebase && git push -q
+          fi

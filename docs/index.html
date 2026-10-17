@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>PAPER Signal</title>
+<meta name="robots" content="noindex">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#f4f3ef;--panel:#ffffff;--ink:#16181d;--muted:#6b6f78;--line:#e3e1db;
+  --farm:#0f9d58;--watch:#d99a00;--wait:#d13b3b;--accent:#2f5bea;--accent2:#8a5cf6;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0c0d10;--panel:#15171c;--ink:#eceef2;--muted:#8b909a;--line:#262931;
+  --farm:#2ecc71;--watch:#f1c40f;--wait:#ff5c5c;--accent:#6c8cff;--accent2:#b18cff;}}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",sans-serif;padding:24px 16px 48px}
+.wrap{max-width:1180px;margin:0 auto}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+h1{font-size:20px;letter-spacing:.02em}
+h1 span{color:var(--muted);font-weight:500}
+.fresh{font:13px var(--mono);color:var(--muted);display:flex;align-items:center;gap:8px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--farm);box-shadow:0 0 0 4px color-mix(in srgb,var(--farm) 20%,transparent)}
+.dot.stale{background:var(--watch);box-shadow:0 0 0 4px color-mix(in srgb,var(--watch) 20%,transparent)}
+.dot.down{background:var(--wait);box-shadow:0 0 0 4px color-mix(in srgb,var(--wait) 20%,transparent)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+.signal{display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center;margin-bottom:14px}
+.badge{font:700 40px/1 var(--mono);letter-spacing:.06em;padding:18px 26px;border-radius:12px;color:#fff;background:var(--wait)}
+.badge.FARM{background:var(--farm)}.badge.WATCH{background:var(--watch);color:#1a1400}
+.why{font-size:17px}
+.why small{display:block;color:var(--muted);font-size:13px;margin-top:6px}
+.banner{display:none;margin-bottom:14px;border-color:var(--wait);color:var(--wait);font-weight:600}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px}
+.kpi .label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.kpi .val{font:600 24px/1.2 var(--mono);margin-top:6px}
+.kpi .sub{font-size:12.5px;color:var(--muted);margin-top:4px}
+.up{color:var(--farm)}.down{color:var(--wait)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
+.panel h2{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px;font-weight:600}
+.chart{position:relative;height:240px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:right;padding:8px 6px;border-bottom:1px solid var(--line);font-family:var(--mono)}
+th:first-child,td:first-child{text-align:left;font-family:inherit}
+th{color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+.timeline{list-style:none;padding:0;max-height:260px;overflow:auto}
+.timeline li{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:14px}
+.timeline time{color:var(--muted);font:12.5px var(--mono)}
+.pill{font:600 12px var(--mono);padding:2px 8px;border-radius:99px;color:#fff;background:var(--wait)}
+.pill.FARM{background:var(--farm)}.pill.WATCH{background:var(--watch);color:#1a1400}
+footer{color:var(--muted);font-size:12.5px;margin-top:18px;line-height:1.6}
+.empty{color:var(--muted);text-align:center;padding:60px 0}
+@media (max-width:760px){
+  .grid2{grid-template-columns:1fr}
+  .signal{grid-template-columns:1fr}
+  .badge{font-size:30px;text-align:center}
+  .chart{height:210px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>PAPER Signal <span>· Papertrade farm timing</span></h1>
+    <div class="fresh"><i class="dot" id="dot"></i><span id="fresh">loading…</span></div>
+  </header>
+
+  <div id="app"><div class="panel empty">Waiting for the first check to run…</div></div>
+
+  <footer>
+    Read-only model. Mint rate and settlement maths follow the contracts as documented by the open-source
+    papertrade-sdk. Payback assumes a straight loss, staker rewards continuing at the stated pace, and dilution
+    from everyone else's losses along the mint curve. It ignores smart-contract, oracle and governance risk.
+    Updated by GitHub Actions every 15 minutes; this page refreshes itself every minute.
+  </footer>
+</div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const usd = (n, d = 0) => n == null ? "—" : "$" + Number(n).toLocaleString("en-GB", {maximumFractionDigits: d, minimumFractionDigits: d});
+const usdM = n => n == null ? "—" : "$" + (n / 1e6).toFixed(2) + "M";
+const days = n => n == null ? "never" : n + "d";
+const ago = ms => {
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 90) return "just now";
+  if (s < 5400) return Math.round(s / 60) + " min ago";
+  if (s < 172800) return Math.round(s / 3600) + " h ago";
+  return Math.round(s / 86400) + " days ago";
+};
+const fmtTime = ms => new Date(ms).toLocaleString("en-GB", {timeZone: "Europe/London", weekday: "short", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short"});
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+let charts = {};
+function chart(id, cfg) {
+  if (charts[id]) { charts[id].data = cfg.data; charts[id].update("none"); return; }
+  const muted = css("--muted"), line = css("--line");
+  cfg.options = Object.assign({
+    responsive: true, maintainAspectRatio: false, animation: false,
+    interaction: {mode: "index", intersect: false},
+    plugins: {legend: {labels: {color: muted, boxWidth: 10, font: {size: 11}}}},
+    scales: {
+      x: {type: "category", ticks: {color: muted, maxTicksLimit: 7, maxRotation: 0, font: {size: 10}}, grid: {display: false}},
+      y: {ticks: {color: muted, font: {size: 10}}, grid: {color: line}}
+    }
+  }, cfg.options || {});
+  charts[id] = new Chart($("#" + id), cfg);
+}
+
+function render(d) {
+  const a = d.latest;
+  if (!a) return;
+  const p = a.protocol, s = a.scenarios, dr = a.drain_to_reset || {};
+  const base = s["last_24h_with_decay"], flat = s["last_24h_flat (optimistic)"];
+  const chg = p.rewards_prev_24h_usd ? (p.rewards_last_24h_usd / p.rewards_prev_24h_usd - 1) * 100 : null;
+  const ratio = p.market_net_cost_per_paper ? p.your_cost_per_paper / p.market_net_cost_per_paper : null;
+
+  if (!$("#signal")) $("#app").innerHTML = `
+    <div class="panel banner" id="banner"></div>
+    <div class="panel signal" id="signal"><div class="badge" id="badge"></div><div class="why" id="why"></div></div>
+    <div class="kpis" id="kpis"></div>
+    <div class="grid2">
+      <div class="panel"><h2>Hourly staker rewards vs trader net loss (7 days)</h2><div class="chart"><canvas id="c1"></canvas></div></div>
+      <div class="panel"><h2>Payback on a $${a.inputs.loss_usd.toLocaleString("en-GB")} loss over time</h2><div class="chart"><canvas id="c2"></canvas></div></div>
+    </div>
+    <div class="grid2">
+      <div class="panel"><h2>Mint rate and LP balance</h2><div class="chart"><canvas id="c3"></canvas></div></div>
+      <div class="panel"><h2>PAPER minted per hour</h2><div class="chart"><canvas id="c4"></canvas></div></div>
+    </div>
+    <div class="grid2">
+      <div class="panel"><h2>Scenarios for a $${a.inputs.loss_usd.toLocaleString("en-GB")} loss</h2><table id="scen"></table></div>
+      <div class="panel"><h2>Signal changes</h2><ul class="timeline" id="tl"></ul></div>
+    </div>`;
+
+  // status banner
+  const st = d.status || {};
+  const b = $("#banner");
+  if (st.ok === false) {
+    b.style.display = "block";
+    b.textContent = `Can't reach Papertrade since ${fmtTime(st.since_ms)} (${st.error}). Showing the last good data.`;
+  } else b.style.display = "none";
+
+  // signal
+  $("#badge").className = "badge " + a.decision;
+  $("#badge").textContent = a.decision;
+  $("#why").innerHTML = "";
+  $("#why").append(a.why.charAt(0).toUpperCase() + a.why.slice(1));
+  const sm = document.createElement("small");
+  sm.textContent = `Target payback ${a.inputs.target_days} days · modelled reward decline ${(a.inputs.decay_per_day * 100).toFixed(1)}%/day`;
+  $("#why").append(sm);
+
+  // KPIs
+  const k = [
+    ["Mint rate", p.mint_rate.toFixed(2), "PAPER per $1 lost" + (p.reset_active ? " · RESET ACTIVE" : "")],
+    ["Your cost / PAPER", "$" + p.your_cost_per_paper.toFixed(4), ratio ? `crowd pays $${p.market_net_cost_per_paper.toFixed(4)} (${ratio.toFixed(1)}×)` : ""],
+    ["Staker rewards 24h", usdM(p.rewards_last_24h_usd), chg == null ? "" : `<span class="${chg >= 0 ? "up" : "down"}">${chg >= 0 ? "▲" : "▼"} ${Math.abs(chg).toFixed(0)}%</span> vs prior 24h · ${usd(p.rewards_last_6h_usd)} last 6h`],
+    ["Payback", days(base.payback_days), `base case · ${days(flat.payback_days)} if rewards hold flat`],
+    ["LP / queue", usdM(p.lp_usd), `queue ${usd(p.queue_usd)}` + (p.rewards_resume_in_days ? ` · rewards resume ~${p.rewards_resume_in_days}d` : "")],
+    ["Reset distance", dr.move_pct_both_assets != null ? dr.move_pct_both_assets.toFixed(2) + "%" : "—",
+      dr.move_pct_both_assets != null ? `crowd-favourable move to drain LP below $2M` : "house exposure unavailable"],
+  ];
+  $("#kpis").innerHTML = k.map(([l, v, sub]) => `<div class="panel kpi"><div class="label">${l}</div><div class="val">${v}</div><div class="sub">${sub}</div></div>`).join("");
+
+  // charts
+  const ps = d.protocol;
+  if (ps && ps.t) {
+    const lbl = ps.t.map(t => new Date(t).toLocaleString("en-GB", {timeZone: "Europe/London", day: "numeric", month: "short", hour: "2-digit"}));
+    chart("c1", {type: "bar", data: {labels: lbl, datasets: [
+      {label: "Staker rewards", data: ps.rewards, backgroundColor: css("--farm")},
+      {label: "Trader net loss", data: ps.net_loss, type: "line", borderColor: css("--accent"), pointRadius: 0, borderWidth: 1.5},
+    ]}, options: {scales: {x: {ticks: {color: css("--muted"), maxTicksLimit: 7, maxRotation: 0, font: {size: 10}}, grid: {display: false}}, y: {ticks: {color: css("--muted"), callback: v => "$" + (v / 1e3).toFixed(0) + "k", font: {size: 10}}, grid: {color: css("--line")}}}}});
+    chart("c4", {type: "bar", data: {labels: lbl, datasets: [
+      {label: "PAPER minted", data: ps.minted, backgroundColor: css("--accent2")},
+    ]}, options: {scales: {x: {ticks: {color: css("--muted"), maxTicksLimit: 7, maxRotation: 0, font: {size: 10}}, grid: {display: false}}, y: {ticks: {color: css("--muted"), callback: v => (v / 1e6).toFixed(0) + "M", font: {size: 10}}, grid: {color: css("--line")}}}}});
+  }
+  const ck = d.checks || [];
+  const cl = ck.map(c => new Date(c.t).toLocaleString("en-GB", {timeZone: "Europe/London", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}));
+  chart("c2", {type: "line", data: {labels: cl, datasets: [
+    {label: "Base case (days)", data: ck.map(c => c.payback_base), borderColor: css("--wait"), pointRadius: 0, borderWidth: 2, spanGaps: false},
+    {label: "Rewards flat (days)", data: ck.map(c => c.payback_flat), borderColor: css("--accent"), pointRadius: 0, borderWidth: 1.5},
+    {label: "Target", data: ck.map(() => a.inputs.target_days), borderColor: css("--farm"), borderDash: [4, 4], pointRadius: 0, borderWidth: 1},
+  ]}, options: {plugins: {legend: {labels: {color: css("--muted"), boxWidth: 10, font: {size: 11}}}, tooltip: {callbacks: {label: c => `${c.dataset.label}: ${c.raw == null ? "never" : c.raw}`}}}}});
+  chart("c3", {type: "line", data: {labels: cl, datasets: [
+    {label: "Mint rate (PAPER/$1)", data: ck.map(c => c.mint_rate), borderColor: css("--accent2"), pointRadius: 0, borderWidth: 2, yAxisID: "y"},
+    {label: "LP ($M)", data: ck.map(c => c.lp / 1e6), borderColor: css("--accent"), pointRadius: 0, borderWidth: 1.5, yAxisID: "y1"},
+  ]}, options: {scales: {
+    x: {ticks: {color: css("--muted"), maxTicksLimit: 6, maxRotation: 0, font: {size: 10}}, grid: {display: false}},
+    y: {position: "left", ticks: {color: css("--muted"), font: {size: 10}}, grid: {color: css("--line")}},
+    y1: {position: "right", ticks: {color: css("--muted"), font: {size: 10}}, grid: {display: false}},
+  }}});
+
+  // scenarios
+  $("#scen").innerHTML = `<tr><th>Scenario</th><th>Payback</th><th>30d</th><th>90d</th><th>1yr</th></tr>` +
+    Object.entries(s).map(([n, r]) => `<tr><td>${n.replace(/_/g, " ")}</td><td>${days(r.payback_days)}</td><td>${usd(r.earned_30d)}</td><td>${usd(r.earned_90d)}</td><td>${usd(r.earned_365d)}</td></tr>`).join("");
+
+  // timeline of changes
+  const changes = [];
+  ck.forEach((c, i) => { if (i === 0 || c.decision !== ck[i - 1].decision) changes.push(c); });
+  $("#tl").innerHTML = changes.reverse().map(c =>
+    `<li><span><span class="pill ${c.decision}">${c.decision}</span></span><time>${fmtTime(c.t)}</time></li>`).join("") || "<li>No changes yet</li>";
+}
+
+function freshness(d) {
+  const t = d.updated_ms;
+  const dot = $("#dot");
+  if (!t) { $("#fresh").textContent = "no data yet"; dot.className = "dot stale"; return; }
+  const stale = Date.now() - t > 40 * 60 * 1000;
+  dot.className = "dot" + ((d.status || {}).ok === false ? " down" : stale ? " stale" : "");
+  $("#fresh").textContent = "updated " + ago(t) + (stale ? " · checks may have stopped" : "");
+}
+
+let last = null;
+async function load() {
+  try {
+    const r = await fetch("data.json?ts=" + Date.now(), {cache: "no-store"});
+    if (!r.ok) throw new Error(r.status);
+    last = await r.json();
+    render(last);
+  } catch (e) {
+    if (!last) $("#fresh").textContent = "waiting for first data…";
+  }
+  if (last) freshness(last);
+}
+load();
+setInterval(load, 60_000);
+setInterval(() => last && freshness(last), 15_000);
+</script>
+</body>
+</html>
