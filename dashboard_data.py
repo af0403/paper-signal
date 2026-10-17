@@ -71,6 +71,13 @@ def record_success(a: dict, history: dict) -> None:
     _save(d)
 
 
+def record_telegram(status: str) -> None:
+    """Public diagnostic: never include the token or chat id here."""
+    d = _load()
+    d["telegram"] = {"status": status[:200], "at_ms": int(time.time() * 1000)}
+    _save(d)
+
+
 def record_failure(err: str) -> None:
     d = _load()
     now = int(time.time() * 1000)

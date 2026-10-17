@@ -31,6 +31,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -87,8 +88,15 @@ def lp_message(prev: str, zone: str, a: dict) -> str | None:
 def tg(token: str, method: str, params: dict | None = None) -> dict:
     url = f"{TG_API}/bot{token}/{method}"
     data = urllib.parse.urlencode(params or {}).encode() if params else None
-    with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20) as r:
-        return json.load(r)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            desc = json.load(e).get("description", "")
+        except Exception:
+            desc = ""
+        raise RuntimeError(f"Telegram {method} HTTP {e.code}: {desc}") from None
 
 
 def find_chat_id(token: str) -> int | None:
@@ -148,13 +156,35 @@ def summary(a: dict) -> str:
 
 
 # -------------------------------------------------------------------- main
+def _err(e: Exception, token: str) -> str:
+    """Error text safe for the public dashboard: the token never appears."""
+    s = f"{type(e).__name__}: {e}"
+    return s.replace(token, "<token>") if token else s
+
+
 def resolve_chat(token: str, state: dict) -> int | None:
+    if not token:
+        dashboard_data.record_telegram("no_token: the GitHub job can't see a bot token secret")
+        return None
     chat_id = os.environ.get("TELEGRAM_CHAT_ID") or state.get("chat_id")
-    if not chat_id:
-        chat_id = find_chat_id(token)
     if chat_id:
         state["chat_id"] = int(chat_id)
         return int(chat_id)
+    try:
+        me = tg(token, "getMe")
+        bot = (me.get("result") or {}).get("username", "?")
+        upd = tg(token, "getUpdates", {"limit": "100"})
+        n = len(upd.get("result", []))
+        chat_id = find_chat_id(token)
+    except Exception as e:
+        dashboard_data.record_telegram("token_error: " + _err(e, token))
+        print("Telegram call failed: " + _err(e, token), file=sys.stderr)
+        return None
+    if chat_id:
+        state["chat_id"] = int(chat_id)
+        return int(chat_id)
+    dashboard_data.record_telegram(f"no_chat: token works for @{bot} but it has {n} unread "
+                                   "messages; send the bot a message in Telegram")
     print("No Telegram chat found yet. Open your bot in Telegram and send it any "
           "message; the next run will pick it up.", file=sys.stderr)
     return None
@@ -179,7 +209,7 @@ def run() -> int:
         state["fail_count"] = state.get("fail_count", 0) + 1
         print(f"fetch/analyse failed ({state['fail_count']}): {e}", file=sys.stderr)
         dashboard_data.record_failure(str(e))
-        chat_id = resolve_chat(token, state) if token else None
+        chat_id = resolve_chat(token, state)
         if chat_id and state["fail_count"] == FAIL_ALERT_AFTER:
             send(token, chat_id, f"⚠️ Can't reach Papertrade's stats for {FAIL_ALERT_AFTER} "
                                  f"checks in a row.\nLast error: {str(e)[:200]}\n"
@@ -187,7 +217,7 @@ def run() -> int:
         save_state(state)
         return 0
 
-    chat_id = resolve_chat(token, state) if token else None
+    chat_id = resolve_chat(token, state)
     if not chat_id:
         save_state(state)
         print(f"{uk_now:%Y-%m-%d %H:%M} {a['decision']} | dashboard updated, no Telegram")
@@ -229,8 +259,17 @@ def run() -> int:
                         f"payback {payback_str(base)}.")
         state["last_heartbeat"] = today
 
-    for m in msgs:
-        send(token, chat_id, m)
+    try:
+        for m in msgs:
+            send(token, chat_id, m)
+    except Exception as e:
+        # Don't record the new state, so the same alert is retried next run.
+        dashboard_data.record_telegram("send_error: " + _err(e, token))
+        print("Telegram send failed: " + _err(e, token), file=sys.stderr)
+        state.pop("chat_id", None) if "chat not found" in str(e).lower() else None
+        save_state(state)
+        return 0
+    dashboard_data.record_telegram(f"ok: sent {len(msgs)} message(s)")
 
     state["last_decision"] = decision
     state["last_run"] = uk_now.isoformat(timespec="minutes")

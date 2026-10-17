@@ -206,7 +206,10 @@ function freshness(d) {
   if (!t) { $("#fresh").textContent = "no data yet"; dot.className = "dot stale"; return; }
   const stale = Date.now() - t > 40 * 60 * 1000;
   dot.className = "dot" + ((d.status || {}).ok === false ? " down" : stale ? " stale" : "");
-  $("#fresh").textContent = "updated " + ago(t) + (stale ? " · checks may have stopped" : "");
+  const tgs = (d.telegram || {}).status || "";
+  const tgLabel = !tgs ? "" : tgs.startsWith("ok") ? " · Telegram connected" : " · Telegram: " + tgs.split(":")[0].replace("_", " ");
+  $("#fresh").textContent = "updated " + ago(t) + (stale ? " · checks may have stopped" : "") + tgLabel;
+  $("#fresh").title = tgs;
 }
 
 let last = null;
